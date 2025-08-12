@@ -247,16 +247,12 @@ async fn test_multisig_4_owners_threshold_2() -> anyhow::Result<()> {
     let sig_1 = authenticators[0].get_signature(public_keys[0].into(), &tx_summary).await?;
     let sig_2 = authenticators[1].get_signature(public_keys[1].into(), &tx_summary).await?;
 
-    // Populate advice map with only 2 signatures
-    let mut advice_map = AdviceMap::default();
-    advice_map.insert(Hasher::merge(&[public_keys[0].into(), msg]), sig_1);
-    advice_map.insert(Hasher::merge(&[public_keys[1].into(), msg]), sig_2);
-
     // Execute transaction with only 2 signatures - should succeed since threshold is 2
     let tx_context_execute = mock_chain
         .build_tx_context(multisig_account.id(), &[], &[])?
-        .extend_advice_map(advice_map.iter().map(|(k, v)| (*k, v.to_vec())))
         .auth_args(salt)
+        .add_signature(public_keys[0], msg, sig_1)
+        .add_signature(public_keys[1], msg, sig_2)
         .build()?;
 
     tx_context_execute
@@ -320,16 +316,12 @@ async fn test_multisig_4_owners_threshold_2_different_signer_combinations() -> a
             .get_signature(public_keys[*signer2_idx].into(), &tx_summary)
             .await?;
 
-        // Populate advice map with signatures from the chosen signers
-        let mut advice_map = AdviceMap::default();
-        advice_map.insert(Hasher::merge(&[public_keys[*signer1_idx].into(), msg]), sig_1);
-        advice_map.insert(Hasher::merge(&[public_keys[*signer2_idx].into(), msg]), sig_2);
-
         // Execute transaction with signatures - should succeed for any combination
         let tx_context_execute = mock_chain
             .build_tx_context(multisig_account.id(), &[], &[])?
-            .extend_advice_map(advice_map.iter().map(|(k, v)| (*k, v.to_vec())))
             .auth_args(salt)
+            .add_signature(public_keys[*signer1_idx], msg, sig_1)
+            .add_signature(public_keys[*signer2_idx], msg, sig_2)
             .build()?;
 
         let executed_tx = tx_context_execute.execute().await.unwrap_or_else(|_| {
