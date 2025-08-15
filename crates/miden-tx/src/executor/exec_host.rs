@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 use miden_lib::errors::TransactionKernelError;
 use miden_lib::transaction::TransactionEvent;
 use miden_objects::account::{AccountDelta, PartialAccount};
-use miden_objects::assembly::debuginfo::Location;
-use miden_objects::assembly::{DefaultSourceManager, SourceFile, SourceManager, SourceSpan};
+use miden_objects::assembly::debuginfo::{Location, SourceManagerSync};
+use miden_objects::assembly::{SourceFile, SourceManager, SourceSpan};
 use miden_objects::transaction::{InputNote, InputNotes, OutputNote};
 use miden_objects::{Felt, Hasher, Word};
 use vm_processor::{
@@ -74,6 +74,7 @@ where
         scripts_mast_store: ScriptMastForestStore,
         acct_procedure_index_map: AccountProcedureIndexMap,
         authenticator: Option<&'auth AUTH>,
+        source_manager: Arc<dyn SourceManagerSync>,
     ) -> Self {
         let base_host = TransactionBaseHost::new(
             account,
@@ -81,6 +82,7 @@ where
             mast_store,
             scripts_mast_store,
             acct_procedure_index_map,
+            source_manager,
         );
 
         Self {
@@ -151,10 +153,9 @@ where
         &self,
         location: &Location,
     ) -> (SourceSpan, Option<Arc<SourceFile>>) {
-        // TODO: Replace with proper call to source manager once the host owns it.
-        let stub_source_manager = DefaultSourceManager::default();
-        let maybe_file = stub_source_manager.get_by_uri(location.uri());
-        let span = stub_source_manager.location_to_span(location.clone()).unwrap_or_default();
+        let source_manager = self.base_host.source_manager().as_ref();
+        let maybe_file = source_manager.get_by_uri(location.uri());
+        let span = source_manager.location_to_span(location.clone()).unwrap_or_default();
         (span, maybe_file)
     }
 }
