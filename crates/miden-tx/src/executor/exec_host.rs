@@ -7,7 +7,7 @@ use miden_lib::errors::TransactionKernelError;
 use miden_lib::transaction::TransactionEvent;
 use miden_objects::account::{AccountDelta, PartialAccount};
 use miden_objects::assembly::debuginfo::{Location, SourceManagerSync};
-use miden_objects::assembly::{SourceFile, SourceManager, SourceSpan};
+use miden_objects::assembly::{SourceFile, SourceSpan};
 use miden_objects::transaction::{InputNote, InputNotes, OutputNote};
 use miden_objects::{Felt, Hasher, Word};
 use vm_processor::{

@@ -35,8 +35,8 @@ use miden_objects::account::{
     AccountType,
     StorageSlot,
 };
+use miden_objects::assembly::default_source_manager_arc_dyn;
 use miden_objects::assembly::diagnostics::{IntoDiagnostic, NamedSource, miette};
-use miden_objects::assembly::{DefaultSourceManager, default_source_manager_arc_dyn};
 use miden_objects::asset::{Asset, AssetVault, FungibleAsset, NonFungibleAsset};
 use miden_objects::block::BlockNumber;
 use miden_objects::note::{
