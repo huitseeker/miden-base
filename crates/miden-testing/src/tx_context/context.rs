@@ -4,14 +4,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_processor::mast::MastForest;
+use miden_processor::trace::TraceLenSummary;
 use miden_processor::{ExecutionOutput, FutureMaybeSend, MastForestStore, Word};
 use miden_protocol::account::{
-    Account,
-    AccountId,
-    PartialAccount,
-    StorageMapKey,
-    StorageMapWitness,
-    StorageSlotContent,
+    Account, AccountId, PartialAccount, StorageMapKey, StorageMapWitness, StorageSlotContent,
 };
 use miden_protocol::assembly::debuginfo::{SourceLanguage, Uri};
 use miden_protocol::assembly::{Assembler, SourceManager, SourceManagerSync};
@@ -20,26 +16,14 @@ use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{Note, NoteScript};
 use miden_protocol::transaction::{
-    AccountInputs,
-    ExecutedTransaction,
-    InputNote,
-    InputNotes,
-    PartialBlockchain,
-    TransactionArgs,
-    TransactionInputs,
-    TransactionKernel,
+    AccountInputs, ExecutedTransaction, InputNote, InputNotes, PartialBlockchain, TransactionArgs,
+    TransactionInputs, TransactionKernel,
 };
 use miden_standards::code_builder::CodeBuilder;
 use miden_tx::auth::{BasicAuthenticator, UnreachableAuth};
 use miden_tx::{
-    AccountProcedureIndexMap,
-    DataStore,
-    DataStoreError,
-    ScriptMastForestStore,
-    TransactionExecutor,
-    TransactionExecutorError,
-    TransactionExecutorHost,
-    TransactionMastStore,
+    AccountProcedureIndexMap, DataStore, DataStoreError, ScriptMastForestStore,
+    TransactionExecutor, TransactionExecutorError, TransactionExecutorHost, TransactionMastStore,
 };
 
 use crate::executor::CodeExecutor;
@@ -197,6 +181,31 @@ impl TransactionContext {
         }
 
         tx_executor.execute_transaction(account_id, block_num, notes, tx_args).await
+    }
+
+    /// Executes the transaction and returns the normal execution result plus a VM trace summary.
+    pub async fn execute_with_trace_summary(
+        self,
+    ) -> Result<(ExecutedTransaction, TraceLenSummary), TransactionExecutorError> {
+        let account_id = self.account().id();
+        let block_num = self.tx_inputs().block_header().block_num();
+        let notes = self.tx_inputs().input_notes().clone();
+        let tx_args = self.tx_args().clone();
+
+        let mut tx_executor =
+            TransactionExecutor::new(&self).with_source_manager(self.source_manager.clone());
+
+        if self.is_debug_mode_enabled {
+            tx_executor = tx_executor.with_debug_mode();
+        }
+
+        if let Some(authenticator) = self.authenticator() {
+            tx_executor = tx_executor.with_authenticator(authenticator);
+        }
+
+        tx_executor
+            .execute_transaction_with_trace_summary(account_id, block_num, notes, tx_args)
+            .await
     }
 
     pub fn account(&self) -> &Account {

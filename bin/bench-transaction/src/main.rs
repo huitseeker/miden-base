@@ -4,17 +4,25 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use miden_protocol::transaction::TransactionMeasurements;
+use miden_testing::TransactionContext;
 
 mod context_setups;
 use context_setups::{
-    tx_consume_single_p2id_note,
-    tx_consume_two_p2id_notes,
-    tx_create_single_p2id_note,
+    tx_consume_single_p2id_note, tx_consume_two_p2id_notes, tx_create_single_p2id_note,
 };
 
 mod cycle_counting_benchmarks;
 use cycle_counting_benchmarks::ExecutionBenchmark;
-use cycle_counting_benchmarks::utils::write_bench_results_to_json;
+use cycle_counting_benchmarks::utils::{MeasurementsPrinter, write_bench_results_to_json};
+
+async fn measure_transaction(
+    setup: impl Fn() -> Result<TransactionContext>,
+) -> Result<MeasurementsPrinter> {
+    let tx_measurements = setup()?.execute().await.map(TransactionMeasurements::from)?;
+    let (_executed_tx, trace_summary) = setup()?.execute_with_trace_summary().await?;
+
+    Ok(MeasurementsPrinter::new(tx_measurements, trace_summary))
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -27,27 +35,15 @@ async fn main() -> Result<()> {
     let benchmark_results = vec![
         (
             ExecutionBenchmark::ConsumeSingleP2ID,
-            tx_consume_single_p2id_note()?
-                .execute()
-                .await
-                .map(TransactionMeasurements::from)?
-                .into(),
+            measure_transaction(tx_consume_single_p2id_note).await?,
         ),
         (
             ExecutionBenchmark::ConsumeTwoP2ID,
-            tx_consume_two_p2id_notes()?
-                .execute()
-                .await
-                .map(TransactionMeasurements::from)?
-                .into(),
+            measure_transaction(tx_consume_two_p2id_notes).await?,
         ),
         (
             ExecutionBenchmark::CreateSingleP2ID,
-            tx_create_single_p2id_note()?
-                .execute()
-                .await
-                .map(TransactionMeasurements::from)?
-                .into(),
+            measure_transaction(tx_create_single_p2id_note).await?,
         ),
     ];
 

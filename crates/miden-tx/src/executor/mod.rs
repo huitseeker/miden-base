@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 use core::marker::PhantomData;
 
 use miden_processor::advice::AdviceInputs;
+use miden_processor::trace::TraceLenSummary;
 use miden_processor::{ExecutionError, FastProcessor, StackInputs};
 pub use miden_processor::{ExecutionOptions, MastForestStore};
 use miden_protocol::account::AccountId;
@@ -11,13 +12,8 @@ use miden_protocol::assembly::debuginfo::SourceManagerSync;
 use miden_protocol::asset::{Asset, AssetVaultKey};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{
-    ExecutedTransaction,
-    InputNote,
-    InputNotes,
-    TransactionArgs,
-    TransactionInputs,
-    TransactionKernel,
-    TransactionScript,
+    ExecutedTransaction, InputNote, InputNotes, TransactionArgs, TransactionInputs,
+    TransactionKernel, TransactionScript,
 };
 use miden_protocol::vm::StackOutputs;
 use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
@@ -35,10 +31,7 @@ pub use data_store::DataStore;
 
 mod notes_checker;
 pub use notes_checker::{
-    FailedNote,
-    MAX_NUM_CHECKER_NOTES,
-    NoteConsumptionChecker,
-    NoteConsumptionInfo,
+    FailedNote, MAX_NUM_CHECKER_NOTES, NoteConsumptionChecker, NoteConsumptionInfo,
 };
 
 mod program_executor;
@@ -394,6 +387,54 @@ where
         let advice_inputs = tx_advice_inputs.into_advice_inputs();
 
         Ok((host, stack_inputs, advice_inputs))
+    }
+}
+
+impl<'store, 'auth, STORE, AUTH> TransactionExecutor<'store, 'auth, STORE, AUTH, FastProcessor>
+where
+    STORE: DataStore + 'store + Sync,
+    AUTH: TransactionAuthenticator + 'auth + Sync,
+{
+    /// Executes a transaction and also returns a summary of the VM trace lengths.
+    ///
+    /// This is intended for observability use cases such as attributing hash-chiplet usage while
+    /// preserving the normal transaction output construction path.
+    pub async fn execute_transaction_with_trace_summary(
+        &self,
+        account_id: AccountId,
+        block_ref: BlockNumber,
+        notes: InputNotes<InputNote>,
+        tx_args: TransactionArgs,
+    ) -> Result<(ExecutedTransaction, TraceLenSummary), TransactionExecutorError> {
+        let tx_inputs = self.prepare_tx_inputs(account_id, block_ref, notes, tx_args).await?;
+
+        let (mut host, stack_inputs, advice_inputs) = self.prepare_transaction(&tx_inputs).await?;
+
+        let trace = miden_processor::execute(
+            &TransactionKernel::main(),
+            stack_inputs,
+            advice_inputs,
+            &mut host,
+            self.exec_options,
+        )
+        .await
+        .map_err(map_execution_error)?;
+        let trace_summary = *trace.trace_len_summary();
+
+        let (stack_outputs, advice_provider) = trace.into_outputs();
+
+        // The stack is not necessary since it is being reconstructed when re-executing.
+        let (_stack, advice_map, merkle_store, _pc_requests) = advice_provider.into_parts();
+        let advice_inputs = AdviceInputs {
+            map: advice_map,
+            store: merkle_store,
+            ..Default::default()
+        };
+
+        let executed_tx =
+            build_executed_transaction(advice_inputs, tx_inputs, stack_outputs, host)?;
+
+        Ok((executed_tx, trace_summary))
     }
 }
 

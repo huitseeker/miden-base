@@ -1,40 +1,112 @@
 {
   "consume single P2ID note": {
-    "prologue": 3487,
-    "notes_processing": 1831,
+    "prologue": 3501,
+    "notes_processing": 1761,
     "note_execution": {
-      "0x1421e92d0f84f11b3e6f84e4e1d193e648eb820666ffb8c50ea818c25a32990c": 1791
+      "0x62e6fe0d5f649b395b5c3f63736fd7b469fd1e0e867c441696d1a70324d3f9a2": 1721
     },
     "tx_script_processing": 42,
     "epilogue": {
-      "total": 71195,
-      "auth_procedure": 69694,
-      "after_tx_cycles_obtained": 608
+      "total": 72351,
+      "auth_procedure": 70846,
+      "after_tx_cycles_obtained": 612
+    },
+    "poseidon2": {
+      "hash_chiplet_rows": 120352,
+      "rows_per_permutation": 32,
+      "total_permutations": 3761,
+      "sampled_work": [
+        {
+          "op": "HPERM",
+          "counting_rule": "each invocation contributes 1 Poseidon2 permutation"
+        },
+        {
+          "op": "MPVERIFY",
+          "counting_rule": "each Merkle path node contributes 1 Poseidon2 permutation"
+        },
+        {
+          "op": "MRUPDATE",
+          "counting_rule": "each Merkle path node contributes 2 Poseidon2 permutations"
+        },
+        {
+          "op": "VM control-block hashing",
+          "counting_rule": "included when the VM routes the work through the hash chiplet"
+        }
+      ],
+      "excluded_work": "host-side Rust Poseidon2 calls outside VM execution are not counted"
     }
   },
   "consume two P2ID notes": {
-    "prologue": 4509,
-    "notes_processing": 3668,
+    "prologue": 4537,
+    "notes_processing": 3600,
     "note_execution": {
-      "0x702c078c74683d33b507e16d9fc67f0be0cc943cd94c1f652e3a60e0f4164d9f": 1791,
-      "0x92cc0c8c208e3b8bad970c23b2c4b4c24cc8d42626b3f56363ce1a6bbf4c7ac2": 1828
+      "0x51e09a95d1aa86daa64a59ce960c7a6baba576decf870aa4500e9847c3740bf9": 1721,
+      "0xf11434d602ac1f69b171c08d5b3352c59c57ecec02e191c61b2a6599269a12c3": 1830
     },
     "tx_script_processing": 42,
     "epilogue": {
-      "total": 71143,
-      "auth_procedure": 69668,
-      "after_tx_cycles_obtained": 608
+      "total": 72299,
+      "auth_procedure": 70820,
+      "after_tx_cycles_obtained": 612
+    },
+    "poseidon2": {
+      "hash_chiplet_rows": 138208,
+      "rows_per_permutation": 32,
+      "total_permutations": 4319,
+      "sampled_work": [
+        {
+          "op": "HPERM",
+          "counting_rule": "each invocation contributes 1 Poseidon2 permutation"
+        },
+        {
+          "op": "MPVERIFY",
+          "counting_rule": "each Merkle path node contributes 1 Poseidon2 permutation"
+        },
+        {
+          "op": "MRUPDATE",
+          "counting_rule": "each Merkle path node contributes 2 Poseidon2 permutations"
+        },
+        {
+          "op": "VM control-block hashing",
+          "counting_rule": "included when the VM routes the work through the hash chiplet"
+        }
+      ],
+      "excluded_work": "host-side Rust Poseidon2 calls outside VM execution are not counted"
     }
   },
   "create single P2ID note": {
     "prologue": 1766,
     "notes_processing": 32,
     "note_execution": {},
-    "tx_script_processing": 1682,
+    "tx_script_processing": 1673,
     "epilogue": {
-      "total": 72099,
-      "auth_procedure": 69906,
-      "after_tx_cycles_obtained": 608
+      "total": 73243,
+      "auth_procedure": 71058,
+      "after_tx_cycles_obtained": 612
+    },
+    "poseidon2": {
+      "hash_chiplet_rows": 116000,
+      "rows_per_permutation": 32,
+      "total_permutations": 3625,
+      "sampled_work": [
+        {
+          "op": "HPERM",
+          "counting_rule": "each invocation contributes 1 Poseidon2 permutation"
+        },
+        {
+          "op": "MPVERIFY",
+          "counting_rule": "each Merkle path node contributes 1 Poseidon2 permutation"
+        },
+        {
+          "op": "MRUPDATE",
+          "counting_rule": "each Merkle path node contributes 2 Poseidon2 permutations"
+        },
+        {
+          "op": "VM control-block hashing",
+          "counting_rule": "included when the VM routes the work through the hash chiplet"
+        }
+      ],
+      "excluded_work": "host-side Rust Poseidon2 calls outside VM execution are not counted"
     }
   }
 }
