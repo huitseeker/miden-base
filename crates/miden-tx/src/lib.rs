@@ -9,8 +9,8 @@ extern crate std;
 mod executor;
 pub use executor::{
     DataStore, ExecutionOptions, FailedNote, MAX_NUM_CHECKER_NOTES, MastForestStore,
-    NoteConsumptionChecker, NoteConsumptionInfo, ProgramExecutor, TransactionExecutor,
-    TransactionExecutorHost,
+    NoteConsumptionChecker, NoteConsumptionInfo, Poseidon2TraceStats, ProgramExecutor,
+    TransactionExecutor, TransactionExecutorHost,
 };
 
 mod host;

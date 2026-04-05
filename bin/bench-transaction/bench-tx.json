@@ -13,8 +13,11 @@
     },
     "poseidon2": {
       "hash_chiplet_rows": 120352,
+      "deduplicated_hash_chiplet_rows": 103072,
       "rows_per_permutation": 32,
       "total_permutations": 3761,
+      "deduplicated_permutations": 3221,
+      "duplicate_permutations": 540,
       "sampled_work": [
         {
           "op": "HPERM",
@@ -31,6 +34,21 @@
         {
           "op": "VM control-block hashing",
           "counting_rule": "included when the VM routes the work through the hash chiplet"
+        },
+        {
+          "op": "Duplicate-cycle filter",
+          "counting_rule": "deduplicated counts keep one copy of each distinct 32-row hash-chiplet cycle"
+        }
+      ],
+      "deduplication_rule": "two permutations are considered duplicates when all 32 rows match across selector columns, 12-limb hasher state, and node index",
+      "duplicate_source": [
+        {
+          "source": "Memoized control-block hashing",
+          "why_it_repeats": "the VM can reuse an already-built control-block hash trace by copying the prior 32-row cycle"
+        },
+        {
+          "source": "Memoized basic-block hashing",
+          "why_it_repeats": "the VM can reuse an already-built basic-block hash trace by copying the prior 32-row cycle"
         }
       ],
       "excluded_work": "host-side Rust Poseidon2 calls outside VM execution are not counted"
@@ -51,8 +69,11 @@
     },
     "poseidon2": {
       "hash_chiplet_rows": 138208,
+      "deduplicated_hash_chiplet_rows": 104960,
       "rows_per_permutation": 32,
       "total_permutations": 4319,
+      "deduplicated_permutations": 3280,
+      "duplicate_permutations": 1039,
       "sampled_work": [
         {
           "op": "HPERM",
@@ -69,6 +90,21 @@
         {
           "op": "VM control-block hashing",
           "counting_rule": "included when the VM routes the work through the hash chiplet"
+        },
+        {
+          "op": "Duplicate-cycle filter",
+          "counting_rule": "deduplicated counts keep one copy of each distinct 32-row hash-chiplet cycle"
+        }
+      ],
+      "deduplication_rule": "two permutations are considered duplicates when all 32 rows match across selector columns, 12-limb hasher state, and node index",
+      "duplicate_source": [
+        {
+          "source": "Memoized control-block hashing",
+          "why_it_repeats": "the VM can reuse an already-built control-block hash trace by copying the prior 32-row cycle"
+        },
+        {
+          "source": "Memoized basic-block hashing",
+          "why_it_repeats": "the VM can reuse an already-built basic-block hash trace by copying the prior 32-row cycle"
         }
       ],
       "excluded_work": "host-side Rust Poseidon2 calls outside VM execution are not counted"
@@ -86,8 +122,11 @@
     },
     "poseidon2": {
       "hash_chiplet_rows": 116000,
+      "deduplicated_hash_chiplet_rows": 100448,
       "rows_per_permutation": 32,
       "total_permutations": 3625,
+      "deduplicated_permutations": 3139,
+      "duplicate_permutations": 486,
       "sampled_work": [
         {
           "op": "HPERM",
@@ -104,6 +143,21 @@
         {
           "op": "VM control-block hashing",
           "counting_rule": "included when the VM routes the work through the hash chiplet"
+        },
+        {
+          "op": "Duplicate-cycle filter",
+          "counting_rule": "deduplicated counts keep one copy of each distinct 32-row hash-chiplet cycle"
+        }
+      ],
+      "deduplication_rule": "two permutations are considered duplicates when all 32 rows match across selector columns, 12-limb hasher state, and node index",
+      "duplicate_source": [
+        {
+          "source": "Memoized control-block hashing",
+          "why_it_repeats": "the VM can reuse an already-built control-block hash trace by copying the prior 32-row cycle"
+        },
+        {
+          "source": "Memoized basic-block hashing",
+          "why_it_repeats": "the VM can reuse an already-built basic-block hash trace by copying the prior 32-row cycle"
         }
       ],
       "excluded_work": "host-side Rust Poseidon2 calls outside VM execution are not counted"

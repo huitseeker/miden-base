@@ -1,9 +1,10 @@
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use miden_processor::advice::AdviceInputs;
-use miden_processor::trace::TraceLenSummary;
+use miden_processor::trace::{ExecutionTrace, TraceLenSummary};
 use miden_processor::{ExecutionError, FastProcessor, StackInputs};
 pub use miden_processor::{ExecutionOptions, MastForestStore};
 use miden_protocol::account::AccountId;
@@ -61,6 +62,34 @@ pub struct TransactionExecutor<
     source_manager: Arc<dyn SourceManagerSync>,
     exec_options: ExecutionOptions,
     _executor: PhantomData<EXEC>,
+}
+
+/// Trace-derived Poseidon2 statistics for a single VM execution.
+#[derive(Debug, Clone, Copy)]
+pub struct Poseidon2TraceStats {
+    hash_chiplet_rows: usize,
+    total_permutations: usize,
+    deduplicated_permutations: usize,
+}
+
+impl Poseidon2TraceStats {
+    pub const ROWS_PER_PERMUTATION: usize = 32;
+
+    pub fn hash_chiplet_rows(&self) -> usize {
+        self.hash_chiplet_rows
+    }
+
+    pub fn total_permutations(&self) -> usize {
+        self.total_permutations
+    }
+
+    pub fn deduplicated_permutations(&self) -> usize {
+        self.deduplicated_permutations
+    }
+
+    pub fn duplicate_permutations(&self) -> usize {
+        self.total_permutations - self.deduplicated_permutations
+    }
 }
 
 impl<'store, 'auth, STORE, AUTH> TransactionExecutor<'store, 'auth, STORE, AUTH>
@@ -405,7 +434,8 @@ where
         block_ref: BlockNumber,
         notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
-    ) -> Result<(ExecutedTransaction, TraceLenSummary), TransactionExecutorError> {
+    ) -> Result<(ExecutedTransaction, TraceLenSummary, Poseidon2TraceStats), TransactionExecutorError>
+    {
         let tx_inputs = self.prepare_tx_inputs(account_id, block_ref, notes, tx_args).await?;
 
         let (mut host, stack_inputs, advice_inputs) = self.prepare_transaction(&tx_inputs).await?;
@@ -420,6 +450,7 @@ where
         .await
         .map_err(map_execution_error)?;
         let trace_summary = *trace.trace_len_summary();
+        let poseidon2_trace_stats = collect_poseidon2_trace_stats(&trace);
 
         let (stack_outputs, advice_provider) = trace.into_outputs();
 
@@ -434,12 +465,52 @@ where
         let executed_tx =
             build_executed_transaction(advice_inputs, tx_inputs, stack_outputs, host)?;
 
-        Ok((executed_tx, trace_summary))
+        Ok((executed_tx, trace_summary, poseidon2_trace_stats))
     }
 }
 
 // HELPER FUNCTIONS
 // ================================================================================================
+
+fn collect_poseidon2_trace_stats(trace: &ExecutionTrace) -> Poseidon2TraceStats {
+    let hash_chiplet_rows = trace.trace_len_summary().chiplets_trace_len().hash_chiplet_len();
+    debug_assert_eq!(
+        hash_chiplet_rows % Poseidon2TraceStats::ROWS_PER_PERMUTATION,
+        0,
+        "hash chiplet rows should be a multiple of the Poseidon2 cycle length"
+    );
+
+    let total_permutations = hash_chiplet_rows / Poseidon2TraceStats::ROWS_PER_PERMUTATION;
+    let main_trace = trace.main_trace();
+    let mut unique_cycles = BTreeSet::new();
+
+    for cycle_start in (0..hash_chiplet_rows).step_by(Poseidon2TraceStats::ROWS_PER_PERMUTATION) {
+        let mut cycle_fingerprint =
+            Vec::with_capacity(Poseidon2TraceStats::ROWS_PER_PERMUTATION * 16);
+
+        for row in cycle_start..(cycle_start + Poseidon2TraceStats::ROWS_PER_PERMUTATION) {
+            let row = row.into();
+            cycle_fingerprint.push(main_trace.chiplet_selector_0(row).as_canonical_u64());
+            cycle_fingerprint.push(main_trace.chiplet_selector_1(row).as_canonical_u64());
+            cycle_fingerprint.push(main_trace.chiplet_selector_2(row).as_canonical_u64());
+            cycle_fingerprint.extend(
+                main_trace
+                    .chiplet_hasher_state(row)
+                    .into_iter()
+                    .map(|felt| felt.as_canonical_u64()),
+            );
+            cycle_fingerprint.push(main_trace.chiplet_node_index(row).as_canonical_u64());
+        }
+
+        unique_cycles.insert(cycle_fingerprint);
+    }
+
+    Poseidon2TraceStats {
+        hash_chiplet_rows,
+        total_permutations,
+        deduplicated_permutations: unique_cycles.len(),
+    }
+}
 
 /// Creates a new [ExecutedTransaction] from the provided data.
 fn build_executed_transaction<STORE: DataStore + Sync, AUTH: TransactionAuthenticator + Sync>(

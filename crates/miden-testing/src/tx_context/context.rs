@@ -22,8 +22,9 @@ use miden_protocol::transaction::{
 use miden_standards::code_builder::CodeBuilder;
 use miden_tx::auth::{BasicAuthenticator, UnreachableAuth};
 use miden_tx::{
-    AccountProcedureIndexMap, DataStore, DataStoreError, ScriptMastForestStore,
-    TransactionExecutor, TransactionExecutorError, TransactionExecutorHost, TransactionMastStore,
+    AccountProcedureIndexMap, DataStore, DataStoreError, Poseidon2TraceStats,
+    ScriptMastForestStore, TransactionExecutor, TransactionExecutorError, TransactionExecutorHost,
+    TransactionMastStore,
 };
 
 use crate::executor::CodeExecutor;
@@ -186,7 +187,8 @@ impl TransactionContext {
     /// Executes the transaction and returns the normal execution result plus a VM trace summary.
     pub async fn execute_with_trace_summary(
         self,
-    ) -> Result<(ExecutedTransaction, TraceLenSummary), TransactionExecutorError> {
+    ) -> Result<(ExecutedTransaction, TraceLenSummary, Poseidon2TraceStats), TransactionExecutorError>
+    {
         let account_id = self.account().id();
         let block_num = self.tx_inputs().block_header().block_num();
         let notes = self.tx_inputs().input_notes().clone();

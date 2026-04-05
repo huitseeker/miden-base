@@ -19,9 +19,10 @@ async fn measure_transaction(
     setup: impl Fn() -> Result<TransactionContext>,
 ) -> Result<MeasurementsPrinter> {
     let tx_measurements = setup()?.execute().await.map(TransactionMeasurements::from)?;
-    let (_executed_tx, trace_summary) = setup()?.execute_with_trace_summary().await?;
+    let (_executed_tx, _trace_summary, poseidon2_trace_stats) =
+        setup()?.execute_with_trace_summary().await?;
 
-    Ok(MeasurementsPrinter::new(tx_measurements, trace_summary))
+    Ok(MeasurementsPrinter::new(tx_measurements, poseidon2_trace_stats))
 }
 
 #[tokio::main(flavor = "current_thread")]

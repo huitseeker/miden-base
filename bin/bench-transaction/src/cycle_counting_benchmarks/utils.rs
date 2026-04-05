@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use miden_protocol::transaction::TransactionMeasurements;
-use miden_tx::TraceLenSummary;
+use miden_tx::Poseidon2TraceStats;
 use serde::Serialize;
 use serde_json::{Value, from_str, to_string_pretty};
 
@@ -28,7 +28,10 @@ pub struct MeasurementsPrinter {
 }
 
 impl MeasurementsPrinter {
-    pub fn new(tx_measurements: TransactionMeasurements, trace_summary: TraceLenSummary) -> Self {
+    pub fn new(
+        tx_measurements: TransactionMeasurements,
+        poseidon2_trace_stats: Poseidon2TraceStats,
+    ) -> Self {
         let note_execution_map = tx_measurements
             .note_execution
             .iter()
@@ -45,7 +48,7 @@ impl MeasurementsPrinter {
                 tx_measurements.auth_procedure,
                 tx_measurements.after_tx_cycles_obtained,
             ),
-            poseidon2: Poseidon2Measurements::from_trace_summary(trace_summary),
+            poseidon2: Poseidon2Measurements::from_trace_stats(poseidon2_trace_stats),
         }
     }
 }
@@ -83,27 +86,27 @@ impl EpilogueMeasurements {
 #[derive(Debug, Clone, Serialize)]
 struct Poseidon2Measurements {
     hash_chiplet_rows: usize,
+    deduplicated_hash_chiplet_rows: usize,
     rows_per_permutation: usize,
     total_permutations: usize,
-    sampled_work: [Poseidon2SampledWork; 4],
+    deduplicated_permutations: usize,
+    duplicate_permutations: usize,
+    sampled_work: [Poseidon2SampledWork; 5],
+    deduplication_rule: &'static str,
+    duplicate_source: [Poseidon2DuplicateSource; 2],
     excluded_work: &'static str,
 }
 
 impl Poseidon2Measurements {
-    const ROWS_PER_PERMUTATION: usize = 32;
-
-    fn from_trace_summary(trace_summary: TraceLenSummary) -> Self {
-        let hash_chiplet_rows = trace_summary.chiplets_trace_len().hash_chiplet_len();
-        debug_assert_eq!(
-            hash_chiplet_rows % Self::ROWS_PER_PERMUTATION,
-            0,
-            "hash chiplet rows should be a multiple of the Poseidon2 cycle length"
-        );
-
+    fn from_trace_stats(trace_stats: Poseidon2TraceStats) -> Self {
         Self {
-            hash_chiplet_rows,
-            rows_per_permutation: Self::ROWS_PER_PERMUTATION,
-            total_permutations: hash_chiplet_rows / Self::ROWS_PER_PERMUTATION,
+            hash_chiplet_rows: trace_stats.hash_chiplet_rows(),
+            deduplicated_hash_chiplet_rows: trace_stats.deduplicated_permutations()
+                * Poseidon2TraceStats::ROWS_PER_PERMUTATION,
+            rows_per_permutation: Poseidon2TraceStats::ROWS_PER_PERMUTATION,
+            total_permutations: trace_stats.total_permutations(),
+            deduplicated_permutations: trace_stats.deduplicated_permutations(),
+            duplicate_permutations: trace_stats.duplicate_permutations(),
             sampled_work: [
                 Poseidon2SampledWork {
                     op: "HPERM",
@@ -121,6 +124,21 @@ impl Poseidon2Measurements {
                     op: "VM control-block hashing",
                     counting_rule: "included when the VM routes the work through the hash chiplet",
                 },
+                Poseidon2SampledWork {
+                    op: "Duplicate-cycle filter",
+                    counting_rule: "deduplicated counts keep one copy of each distinct 32-row hash-chiplet cycle",
+                },
+            ],
+            deduplication_rule: "two permutations are considered duplicates when all 32 rows match across selector columns, 12-limb hasher state, and node index",
+            duplicate_source: [
+                Poseidon2DuplicateSource {
+                    source: "Memoized control-block hashing",
+                    why_it_repeats: "the VM can reuse an already-built control-block hash trace by copying the prior 32-row cycle",
+                },
+                Poseidon2DuplicateSource {
+                    source: "Memoized basic-block hashing",
+                    why_it_repeats: "the VM can reuse an already-built basic-block hash trace by copying the prior 32-row cycle",
+                },
             ],
             excluded_work: "host-side Rust Poseidon2 calls outside VM execution are not counted",
         }
@@ -131,6 +149,12 @@ impl Poseidon2Measurements {
 struct Poseidon2SampledWork {
     op: &'static str,
     counting_rule: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct Poseidon2DuplicateSource {
+    source: &'static str,
+    why_it_repeats: &'static str,
 }
 
 /// Writes the provided benchmark results to the JSON file at the provided path.
