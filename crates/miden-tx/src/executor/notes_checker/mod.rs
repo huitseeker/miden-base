@@ -4,8 +4,9 @@ use alloc::vec::Vec;
 use miden_processor::ExecutionError;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::Note;
+use miden_protocol::note::{Note, NoteId};
 use miden_protocol::transaction::{
+    IesSealSecret,
     InputNote,
     InputNotes,
     TransactionArgs,
@@ -162,7 +163,14 @@ where
             && let Some(consumption_status) =
                 standard_note.is_consumable(note.note(), target_account_id, block_ref)
         {
-            return Ok(consumption_status);
+            let may_consume_now = matches!(
+                consumption_status,
+                NoteConsumptionStatus::Consumable
+                    | NoteConsumptionStatus::ConsumableWithAuthorization
+            );
+            if tx_args.ies_seal_secrets().is_empty() || !may_consume_now {
+                return Ok(consumption_status);
+            }
         }
 
         // Prepare transaction inputs.
@@ -178,7 +186,13 @@ where
             .map_err(NoteCheckerError::TransactionPreparation)?;
 
         // try to consume the provided note
-        match self.try_execute_notes(&mut tx_inputs, true).await {
+        let ies_seal_secrets: Vec<IesSealSecret> =
+            tx_inputs.ies_seal_secrets_in_request_order().cloned().collect();
+        let mut ies_seal_request_notes = Vec::new();
+        match self
+            .try_execute_notes(&mut tx_inputs, &ies_seal_secrets, &mut ies_seal_request_notes)
+            .await
+        {
             // execution succeeded
             Ok(_cycle_counts) => Ok(NoteConsumptionStatus::Consumable),
             Err(tx_checker_error) => {
@@ -236,7 +250,8 @@ where
         mut bundles: NoteBundles,
         mut failed_notes: Vec<FailedNote>,
     ) -> Result<NoteConsumptionInfo, NoteCheckerError> {
-        let mut replay_ies_secrets = true;
+        let mut ies_seal_secrets: Vec<IesSealSecret> =
+            tx_inputs.ies_seal_secrets_in_request_order().cloned().collect();
 
         // Attempt to execute notes in a loop. Reduce the set of bundles based on failures until
         // either a set of notes executes without failure or the set of bundles cannot be further
@@ -251,7 +266,11 @@ where
                 bundles.to_notes().into_iter().map(InputNote::unauthenticated).collect(),
             ));
 
-            match self.try_execute_notes(&mut tx_inputs, replay_ies_secrets).await {
+            let mut ies_seal_request_notes = Vec::new();
+            match self
+                .try_execute_notes(&mut tx_inputs, &ies_seal_secrets, &mut ies_seal_request_notes)
+                .await
+            {
                 // A full set of successful notes has been found, or every note executed and the
                 // account's authentication could not complete. The bundles hold the notes in the
                 // order they were executed in, so they line up with the cycle counts.
@@ -292,15 +311,22 @@ where
                     if bundles.is_empty() {
                         return Ok(NoteConsumptionInfo::new(Vec::new(), failed_notes));
                     }
-                    // The original request order no longer describes the reduced note set. Trial
-                    // executions generate fresh secrets; the original execution above already
-                    // validated supplied secrets against the complete transaction.
-                    replay_ies_secrets = false;
+                    ies_seal_secrets = ies_seal_secrets_for_candidate_notes(
+                        &ies_seal_secrets,
+                        &ies_seal_request_notes,
+                        &bundles.to_notes(),
+                    );
                     // Continue and process the next set of candidates.
                 },
                 Err(TransactionCheckerError::EpilogueExecution { .. }) => {
                     let consumption_info = self
-                        .find_largest_executable_combination(bundles, failed_notes, tx_inputs)
+                        .find_largest_executable_combination(
+                            bundles,
+                            failed_notes,
+                            tx_inputs,
+                            ies_seal_secrets,
+                            ies_seal_request_notes,
+                        )
                         .await;
                     return Ok(consumption_info);
                 },
@@ -326,6 +352,8 @@ where
         bundles: NoteBundles,
         mut failed_notes: Vec<FailedNote>,
         mut tx_inputs: TransactionInputs,
+        ies_seal_secrets: Vec<IesSealSecret>,
+        ies_seal_request_notes: Vec<Option<NoteId>>,
     ) -> NoteConsumptionInfo {
         let mut accepted_notes: Vec<Note> = Vec::new();
         let mut accepted_cycle_counts = Vec::new();
@@ -342,7 +370,20 @@ where
                 candidate_notes.iter().cloned().map(InputNote::unauthenticated).collect(),
             ));
 
-            match self.try_execute_notes(&mut tx_inputs, false).await {
+            let candidate_ies_seal_secrets = ies_seal_secrets_for_candidate_notes(
+                &ies_seal_secrets,
+                &ies_seal_request_notes,
+                &candidate_notes,
+            );
+            let mut candidate_ies_seal_request_notes = Vec::new();
+            match self
+                .try_execute_notes(
+                    &mut tx_inputs,
+                    &candidate_ies_seal_secrets,
+                    &mut candidate_ies_seal_request_notes,
+                )
+                .await
+            {
                 // This combination passed, or executed up to the account's authentication:
                 // commit it.
                 Ok(cycle_counts)
@@ -416,20 +457,16 @@ where
     async fn try_execute_notes(
         &self,
         tx_inputs: &mut TransactionInputs,
-        replay_ies_secrets: bool,
+        ies_seal_secrets: &[IesSealSecret],
+        ies_seal_request_notes: &mut Vec<Option<NoteId>>,
     ) -> Result<Vec<usize>, TransactionCheckerError> {
         if tx_inputs.input_notes().is_empty() {
             return Ok(Vec::new());
         }
 
-        let ies_seal_secrets = if replay_ies_secrets {
-            tx_inputs.ies_seal_secrets_in_request_order().cloned().collect()
-        } else {
-            Vec::new()
-        };
         let (mut host, stack_inputs, advice_inputs) = self
             .tx_executor
-            .prepare_transaction(tx_inputs, ies_seal_secrets)
+            .prepare_transaction(tx_inputs, ies_seal_secrets.to_vec())
             .await
             .map_err(TransactionCheckerError::TransactionPreparation)?;
 
@@ -446,6 +483,9 @@ where
             .execute(&program, &mut host)
             .await
             .map_err(map_execution_error);
+
+        ies_seal_request_notes.clear();
+        ies_seal_request_notes.extend_from_slice(host.ies_seal_request_notes());
 
         let recipient_mismatch = matches!(
             &result,
@@ -569,6 +609,26 @@ where
 
 // HELPER FUNCTIONS
 // ================================================================================================
+
+/// Keeps supplied secrets requested outside note execution, by candidate notes, or not yet reached.
+fn ies_seal_secrets_for_candidate_notes(
+    ies_seal_secrets: &[IesSealSecret],
+    ies_seal_request_notes: &[Option<NoteId>],
+    candidate_notes: &[Note],
+) -> Vec<IesSealSecret> {
+    ies_seal_secrets
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| {
+            let Some(Some(note_id)) = ies_seal_request_notes.get(*idx) else {
+                return true;
+            };
+
+            candidate_notes.iter().any(|note| note.id() == *note_id)
+        })
+        .map(|(_, secret)| secret.clone())
+        .collect()
+}
 
 /// Pairs the notes of an execution with their cycle counts, which come in execution order.
 fn successful_notes(notes: Vec<Note>, cycle_counts: Vec<usize>) -> Vec<SuccessfulNote> {

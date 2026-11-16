@@ -24,6 +24,7 @@ use miden_protocol::transaction::{
 };
 use miden_protocol::{Felt, WORD_SIZE, Word};
 use miden_standards::code_builder::CodeBuilder;
+use miden_standards::note::P2idNote;
 use miden_standards::testing::mock_account::MockAccountExt;
 use miden_standards::testing::note::NoteBuilder;
 use miden_tx::auth::UnreachableAuth;
@@ -147,9 +148,9 @@ async fn ies_seal_rejects_a_secret_for_another_recipient() -> anyhow::Result<()>
     Ok(())
 }
 
-/// Reduced note-set trials draw fresh secrets after the complete request order is validated.
+/// Reduced note-set trials retain supplied secrets for the notes that remain.
 #[tokio::test]
-async fn ies_seal_checker_retries_a_reduced_note_set_with_fresh_secrets() -> anyhow::Result<()> {
+async fn ies_seal_checker_replays_remaining_secrets_for_a_reduced_note_set() -> anyhow::Result<()> {
     let first_recipient = secret_key(1).public_key();
     let second_recipient = secret_key(2).public_key();
     let failing_note = ies_note(first_recipient.to_elements(), true)?;
@@ -182,14 +183,60 @@ async fn ies_seal_checker_retries_a_reduced_note_set_with_fresh_secrets() -> any
     Ok(())
 }
 
+/// Reduced note-set trials validate supplied secrets first reached after an earlier note fails.
+#[tokio::test]
+async fn ies_seal_checker_validates_a_later_note_secret_after_failure() -> anyhow::Result<()> {
+    let first_recipient = secret_key(1).public_key();
+    let second_recipient = secret_key(2).public_key();
+    let wrong_recipient = secret_key(3).public_key();
+    let failing_note = ies_note(first_recipient.to_elements(), true)?;
+    let later_note = ies_note(second_recipient.to_elements(), false)?;
+    let notes = vec![failing_note, later_note];
+
+    let (mock_chain, account) = mock_chain_and_account()?;
+    let mock_tx = mock_chain
+        .build_transaction(account)
+        .unauthenticated_input_notes(notes.clone())
+        .add_ies_seal_secret(IesSealSecret::new(first_recipient, secret_key(4)))
+        .add_ies_seal_secret(IesSealSecret::new(wrong_recipient, secret_key(5)))
+        .build()?;
+
+    let executor = TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&mock_tx);
+    let checker_error = NoteConsumptionChecker::new(&executor)
+        .check_notes_consumability(
+            mock_tx.account().id(),
+            mock_tx.tx_inputs().block_header().block_num(),
+            notes,
+            mock_tx.tx_args().clone(),
+        )
+        .await
+        .unwrap_err();
+
+    let NoteCheckerError::TransactionPreparation(checker_error) = checker_error else {
+        anyhow::bail!("expected transaction preparation failure, got {checker_error}");
+    };
+    assert_recipient_mismatch(
+        checker_error,
+        wrong_recipient.to_commitment(),
+        second_recipient.to_commitment(),
+    );
+
+    Ok(())
+}
+
 /// Note checking and execution reject a supplied secret when there is no IES `seal` request.
 #[tokio::test]
 async fn ies_seal_rejects_an_unused_secret() -> anyhow::Result<()> {
     let recipient = secret_key(1).public_key();
-    let note = NoteBuilder::new(ACCOUNT_ID_SENDER.try_into().unwrap(), &mut rand::rng())
-        .code("@note_script pub proc main push.0 drop end")
-        .build()?;
     let (mock_chain, account) = mock_chain_and_account()?;
+    let note: Note = P2idNote::builder()
+        .sender(ACCOUNT_ID_SENDER.try_into().unwrap())
+        .target(account.id())
+        .serial_number(Word::from([1u32, 2, 3, 4]))
+        .asset(FungibleAsset::mock(100))
+        .note_type(NoteType::Public)
+        .build()?
+        .into();
     let mock_tx = mock_chain
         .build_transaction(account)
         .unauthenticated_input_note(note.clone())

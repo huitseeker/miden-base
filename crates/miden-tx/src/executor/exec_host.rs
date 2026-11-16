@@ -23,6 +23,7 @@ use miden_protocol::crypto::ecdh::ecgfp5::{PublicKey, SecretKey};
 use miden_protocol::crypto::merkle::smt::SmtProof;
 use miden_protocol::errors::TransactionInputError;
 use miden_protocol::note::{
+    NoteId,
     NoteRecipient,
     NoteScript,
     NoteScriptRoot,
@@ -92,6 +93,12 @@ where
     /// The data that was lazy loaded during transaction execution.
     lazy_loaded_data: LazyLoadedData,
 
+    /// The note being executed, if the VM is currently processing an input note.
+    active_note_id: Option<NoteId>,
+
+    /// The input note associated with each IES seal request, in request order.
+    ies_seal_request_notes: Vec<Option<NoteId>>,
+
     /// Whether execution is currently inside the authentication procedure.
     ///
     /// The epilogue wraps the auth procedure between the `EpilogueAuthProcStart` and
@@ -150,6 +157,8 @@ where
             authenticator,
             ref_block,
             lazy_loaded_data: LazyLoadedData::default(),
+            active_note_id: None,
+            ies_seal_request_notes: Vec::new(),
             in_auth_procedure: false,
             source_manager,
         })
@@ -161,6 +170,11 @@ where
     /// Returns a reference to the `tx_progress` field of this transaction host.
     pub fn tx_progress(&self) -> &TransactionProgress {
         &self.tx_progress
+    }
+
+    /// Returns the input note associated with each IES seal request, in request order.
+    pub(crate) fn ies_seal_request_notes(&self) -> &[Option<NoteId>] {
+        &self.ies_seal_request_notes
     }
 
     // EVENT HANDLERS
@@ -238,6 +252,8 @@ where
         &mut self,
         recipient: PublicKey,
     ) -> Result<Vec<AdviceMutation>, TransactionKernelError> {
+        self.ies_seal_request_notes.push(self.active_note_id);
+
         if let Some(secret) = self.base_host.next_ies_seal_secret(recipient)? {
             return Ok(self.base_host.on_ies_seal_requested(&secret));
         }
@@ -776,10 +792,12 @@ where
                     },
                     TransactionProgressEvent::NoteExecutionStart { note_id, clk } => {
                         self.tx_progress.start_note_execution(clk, note_id);
+                        self.active_note_id = Some(note_id);
                         Ok(Vec::new())
                     },
                     TransactionProgressEvent::NoteExecutionEnd(clk) => {
                         self.tx_progress.end_note_execution(clk);
+                        self.active_note_id = None;
                         Ok(Vec::new())
                     },
                     TransactionProgressEvent::TxScriptProcessingStart(clk) => {
