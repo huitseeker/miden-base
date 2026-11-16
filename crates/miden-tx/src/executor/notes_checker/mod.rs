@@ -18,7 +18,7 @@ use super::{ProgramExecutor, TransactionExecutor};
 use crate::auth::TransactionAuthenticator;
 use crate::errors::TransactionCheckerError;
 use crate::executor::map_execution_error;
-use crate::{DataStore, NoteCheckerError, TransactionExecutorError};
+use crate::{DataStore, NoteCheckerError, TransactionExecutorError, TransactionKernelError};
 
 mod bundle;
 mod checker_utils;
@@ -178,7 +178,7 @@ where
             .map_err(NoteCheckerError::TransactionPreparation)?;
 
         // try to consume the provided note
-        match self.try_execute_notes(&mut tx_inputs).await {
+        match self.try_execute_notes(&mut tx_inputs, true).await {
             // execution succeeded
             Ok(_cycle_counts) => Ok(NoteConsumptionStatus::Consumable),
             Err(tx_checker_error) => {
@@ -236,6 +236,8 @@ where
         mut bundles: NoteBundles,
         mut failed_notes: Vec<FailedNote>,
     ) -> Result<NoteConsumptionInfo, NoteCheckerError> {
+        let mut replay_ies_secrets = true;
+
         // Attempt to execute notes in a loop. Reduce the set of bundles based on failures until
         // either a set of notes executes without failure or the set of bundles cannot be further
         // reduced.
@@ -249,7 +251,7 @@ where
                 bundles.to_notes().into_iter().map(InputNote::unauthenticated).collect(),
             ));
 
-            match self.try_execute_notes(&mut tx_inputs).await {
+            match self.try_execute_notes(&mut tx_inputs, replay_ies_secrets).await {
                 // A full set of successful notes has been found, or every note executed and the
                 // account's authentication could not complete. The bundles hold the notes in the
                 // order they were executed in, so they line up with the cycle counts.
@@ -290,6 +292,10 @@ where
                     if bundles.is_empty() {
                         return Ok(NoteConsumptionInfo::new(Vec::new(), failed_notes));
                     }
+                    // The original request order no longer describes the reduced note set. Trial
+                    // executions generate fresh secrets; the original execution above already
+                    // validated supplied secrets against the complete transaction.
+                    replay_ies_secrets = false;
                     // Continue and process the next set of candidates.
                 },
                 Err(TransactionCheckerError::EpilogueExecution { .. }) => {
@@ -336,7 +342,7 @@ where
                 candidate_notes.iter().cloned().map(InputNote::unauthenticated).collect(),
             ));
 
-            match self.try_execute_notes(&mut tx_inputs).await {
+            match self.try_execute_notes(&mut tx_inputs, false).await {
                 // This combination passed, or executed up to the account's authentication:
                 // commit it.
                 Ok(cycle_counts)
@@ -410,12 +416,17 @@ where
     async fn try_execute_notes(
         &self,
         tx_inputs: &mut TransactionInputs,
+        replay_ies_secrets: bool,
     ) -> Result<Vec<usize>, TransactionCheckerError> {
         if tx_inputs.input_notes().is_empty() {
             return Ok(Vec::new());
         }
 
-        let ies_seal_secrets = tx_inputs.ies_seal_secrets_in_request_order().cloned().collect();
+        let ies_seal_secrets = if replay_ies_secrets {
+            tx_inputs.ies_seal_secrets_in_request_order().cloned().collect()
+        } else {
+            Vec::new()
+        };
         let (mut host, stack_inputs, advice_inputs) = self
             .tx_executor
             .prepare_transaction(tx_inputs, ies_seal_secrets)
@@ -435,6 +446,35 @@ where
             .execute(&program, &mut host)
             .await
             .map_err(map_execution_error);
+
+        let recipient_mismatch = matches!(
+            &result,
+            Err(TransactionExecutorError::TransactionProgramExecutionFailed(
+                ExecutionError::EventError { error, .. }
+            )) if matches!(
+                error.downcast_ref::<TransactionKernelError>(),
+                Some(TransactionKernelError::IesSealSecretRecipientMismatch { .. })
+            )
+        );
+        if recipient_mismatch {
+            let Err(error) = result else {
+                unreachable!("recipient mismatch was matched on an execution error")
+            };
+            return Err(TransactionCheckerError::TransactionPreparation(error));
+        }
+
+        let num_unused_ies_seal_secrets = host.num_unused_ies_seal_secrets();
+        let execution_completed = matches!(
+            &result,
+            Ok(_)
+                | Err(TransactionExecutorError::Unauthorized { .. })
+                | Err(TransactionExecutorError::MissingAuthenticator)
+        );
+        if execution_completed && num_unused_ies_seal_secrets != 0 {
+            return Err(TransactionCheckerError::TransactionPreparation(
+                TransactionExecutorError::UnusedIesSealSecrets(num_unused_ies_seal_secrets),
+            ));
+        }
 
         let (tx_progress, lazy_loaded_data) = host.into_notes_checker_parts();
 

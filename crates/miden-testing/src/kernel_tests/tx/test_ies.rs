@@ -11,7 +11,7 @@ use miden_protocol::account::Account;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::ecdh::ecgfp5::SecretKey;
 use miden_protocol::crypto::ies::ecgfp5_eidos::{self, Envelope};
-use miden_protocol::note::NoteType;
+use miden_protocol::note::{Note, NoteType};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
     ACCOUNT_ID_SENDER,
@@ -25,6 +25,7 @@ use miden_protocol::transaction::{
 use miden_protocol::{Felt, WORD_SIZE, Word};
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::testing::mock_account::MockAccountExt;
+use miden_standards::testing::note::NoteBuilder;
 use miden_tx::auth::UnreachableAuth;
 use miden_tx::{
     LocalTransactionProver,
@@ -135,8 +136,8 @@ async fn ies_seal_rejects_a_secret_for_another_recipient() -> anyhow::Result<()>
             .await
             .unwrap_err()
     };
-    let NoteCheckerError::TransactionScriptExecution(checker_error) = checker_error else {
-        anyhow::bail!("expected transaction script failure, got {checker_error}");
+    let NoteCheckerError::TransactionPreparation(checker_error) = checker_error else {
+        anyhow::bail!("expected transaction preparation failure, got {checker_error}");
     };
     assert_recipient_mismatch(checker_error, supplied.to_commitment(), requested.to_commitment());
 
@@ -146,18 +147,73 @@ async fn ies_seal_rejects_a_secret_for_another_recipient() -> anyhow::Result<()>
     Ok(())
 }
 
-/// Execution rejects a supplied secret when the transaction makes no IES `seal` request.
+/// Reduced note-set trials draw fresh secrets after the complete request order is validated.
+#[tokio::test]
+async fn ies_seal_checker_retries_a_reduced_note_set_with_fresh_secrets() -> anyhow::Result<()> {
+    let first_recipient = secret_key(1).public_key();
+    let second_recipient = secret_key(2).public_key();
+    let failing_note = ies_note(first_recipient.to_elements(), true)?;
+    let successful_note = ies_note(second_recipient.to_elements(), false)?;
+    let notes = vec![failing_note.clone(), successful_note.clone()];
+
+    let (mock_chain, account) = mock_chain_and_account()?;
+    let mock_tx = mock_chain
+        .build_transaction(account)
+        .unauthenticated_input_notes(notes.clone())
+        .add_ies_seal_secret(IesSealSecret::new(first_recipient, secret_key(3)))
+        .add_ies_seal_secret(IesSealSecret::new(second_recipient, secret_key(4)))
+        .build()?;
+
+    let executor = TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&mock_tx);
+    let consumption_info = NoteConsumptionChecker::new(&executor)
+        .check_notes_consumability(
+            mock_tx.account().id(),
+            mock_tx.tx_inputs().block_header().block_num(),
+            notes,
+            mock_tx.tx_args().clone(),
+        )
+        .await?;
+
+    assert_eq!(consumption_info.successful().len(), 1);
+    assert_eq!(consumption_info.successful()[0].note().id(), successful_note.id());
+    assert_eq!(consumption_info.failed().len(), 1);
+    assert_eq!(consumption_info.failed()[0].note().id(), failing_note.id());
+
+    Ok(())
+}
+
+/// Note checking and execution reject a supplied secret when there is no IES `seal` request.
 #[tokio::test]
 async fn ies_seal_rejects_an_unused_secret() -> anyhow::Result<()> {
     let recipient = secret_key(1).public_key();
+    let note = NoteBuilder::new(ACCOUNT_ID_SENDER.try_into().unwrap(), &mut rand::rng())
+        .code("@note_script pub proc main push.0 drop end")
+        .build()?;
     let (mock_chain, account) = mock_chain_and_account()?;
-    let result = mock_chain
+    let mock_tx = mock_chain
         .build_transaction(account)
+        .unauthenticated_input_note(note.clone())
         .add_ies_seal_secret(IesSealSecret::new(recipient, secret_key(2)))
-        .build()?
-        .execute()
-        .await;
+        .build()?;
 
+    let checker_error = {
+        let executor = TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&mock_tx);
+        NoteConsumptionChecker::new(&executor)
+            .can_consume(
+                mock_tx.account().id(),
+                mock_tx.tx_inputs().block_header().block_num(),
+                InputNote::unauthenticated(note),
+                mock_tx.tx_args().clone(),
+            )
+            .await
+            .unwrap_err()
+    };
+    assert_matches!(
+        checker_error,
+        NoteCheckerError::TransactionPreparation(TransactionExecutorError::UnusedIesSealSecrets(1))
+    );
+
+    let result = mock_tx.execute().await;
     assert_matches!(result, Err(TransactionExecutorError::UnusedIesSealSecrets(1)));
 
     Ok(())
@@ -202,6 +258,33 @@ fn compile_tx_script(recipient: [Felt; 5]) -> anyhow::Result<TransactionScript> 
     CodeBuilder::with_mock_packages()
         .compile_tx_script(code)
         .context("failed to compile IES transaction script")
+}
+
+fn ies_note(recipient: [Felt; 5], fail_after_seal: bool) -> anyhow::Result<Note> {
+    let failure = if fail_after_seal { "push.1 push.0 div" } else { "" };
+    let code = format!(
+        r#"
+        use miden::protocol::ies
+
+        @note_script
+        pub proc main
+            {store_inputs}
+            push.{ENVELOPE_PTR} push.{context_len} push.{CONTEXT_PTR}
+            push.{plaintext_len} push.{PLAINTEXT_PTR}
+            {recipient}
+            exec.ies::seal
+            {failure}
+        end
+        "#,
+        store_inputs = store_inputs(),
+        context_len = CONTEXT.len(),
+        plaintext_len = PLAINTEXT.len(),
+        recipient = push_reversed(&recipient),
+    );
+
+    Ok(NoteBuilder::new(ACCOUNT_ID_SENDER.try_into().unwrap(), &mut rand::rng())
+        .code(code)
+        .build()?)
 }
 
 fn store_inputs() -> String {
