@@ -8,7 +8,7 @@ use anyhow::Context;
 use assert_matches::assert_matches;
 use miden_processor::ExecutionError;
 use miden_protocol::account::Account;
-use miden_protocol::asset::FungibleAsset;
+use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::crypto::ecdh::ecgfp5::SecretKey;
 use miden_protocol::crypto::ies::ecgfp5_eidos::{self, Envelope};
 use miden_protocol::note::{Note, NoteType};
@@ -20,6 +20,7 @@ use miden_protocol::transaction::{
     ExecutedTransaction,
     IesSealSecret,
     InputNote,
+    RawOutputNote,
     TransactionScript,
 };
 use miden_protocol::{Felt, WORD_SIZE, Word};
@@ -224,6 +225,45 @@ async fn ies_seal_checker_validates_a_later_note_secret_after_failure() -> anyho
     Ok(())
 }
 
+/// Epilogue subset trials keep the supplied secrets associated with each candidate note.
+#[tokio::test]
+async fn ies_seal_checker_filters_secrets_for_epilogue_subset_trials() -> anyhow::Result<()> {
+    let first_recipient = secret_key(1).public_key();
+    let second_recipient = secret_key(2).public_key();
+    let successful_note = ies_note(first_recipient.to_elements(), false)?;
+    let fail_epilogue_note =
+        ies_note_with_assets(second_recipient.to_elements(), false, [FungibleAsset::mock(700)])?;
+
+    let mut builder = MockChain::builder();
+    let account = builder.add_existing_wallet(Auth::IncrNonce)?;
+    builder.add_output_note(RawOutputNote::Full(fail_epilogue_note.clone()));
+    let mock_chain = builder.build()?;
+    let notes = vec![successful_note.clone(), fail_epilogue_note.clone()];
+    let mock_tx = mock_chain
+        .build_transaction(account)
+        .unauthenticated_input_notes(notes.clone())
+        .add_ies_seal_secret(IesSealSecret::new(first_recipient, secret_key(3)))
+        .add_ies_seal_secret(IesSealSecret::new(second_recipient, secret_key(4)))
+        .build()?;
+
+    let executor = TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&mock_tx);
+    let consumption_info = NoteConsumptionChecker::new(&executor)
+        .check_notes_consumability(
+            mock_tx.account().id(),
+            mock_tx.tx_inputs().block_header().block_num(),
+            notes,
+            mock_tx.tx_args().clone(),
+        )
+        .await?;
+
+    assert_eq!(consumption_info.successful().len(), 1);
+    assert_eq!(consumption_info.successful()[0].note().id(), successful_note.id());
+    assert_eq!(consumption_info.failed().len(), 1);
+    assert_eq!(consumption_info.failed()[0].note().id(), fail_epilogue_note.id());
+
+    Ok(())
+}
+
 /// Note checking and execution reject a supplied secret when there is no IES `seal` request.
 #[tokio::test]
 async fn ies_seal_rejects_an_unused_secret() -> anyhow::Result<()> {
@@ -308,6 +348,14 @@ fn compile_tx_script(recipient: [Felt; 5]) -> anyhow::Result<TransactionScript> 
 }
 
 fn ies_note(recipient: [Felt; 5], fail_after_seal: bool) -> anyhow::Result<Note> {
+    ies_note_with_assets(recipient, fail_after_seal, [])
+}
+
+fn ies_note_with_assets(
+    recipient: [Felt; 5],
+    fail_after_seal: bool,
+    assets: impl IntoIterator<Item = Asset>,
+) -> anyhow::Result<Note> {
     let failure = if fail_after_seal { "push.1 push.0 div" } else { "" };
     let code = format!(
         r#"
@@ -330,6 +378,7 @@ fn ies_note(recipient: [Felt; 5], fail_after_seal: bool) -> anyhow::Result<Note>
     );
 
     Ok(NoteBuilder::new(ACCOUNT_ID_SENDER.try_into().unwrap(), &mut rand::rng())
+        .add_assets(assets)
         .code(code)
         .build()?)
 }
