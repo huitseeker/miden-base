@@ -79,6 +79,7 @@ async fn build_trace_summary(tx_inputs: TransactionInputs) -> Result<TraceLenSum
         mast_store.as_ref(),
         script_mast_store,
         account_procedure_index_map,
+        Vec::new(),
     )
     .context("failed to construct transaction prover host")?;
 

@@ -1,5 +1,7 @@
 use core::fmt;
 
+use subtle::ConstantTimeEq;
+
 use crate::crypto::ecdh::ecgfp5::{AgreementAdvice, PublicKey, SecretKey};
 use crate::utils::serde::{
     ByteReader,
@@ -57,7 +59,11 @@ impl Clone for IesSealSecret {
 impl PartialEq for IesSealSecret {
     fn eq(&self, other: &Self) -> bool {
         self.recipient == other.recipient
-            && *self.ephemeral_secret.to_bytes() == *other.ephemeral_secret.to_bytes()
+            && bool::from(
+                self.ephemeral_secret
+                    .to_bytes()
+                    .ct_eq(other.ephemeral_secret.to_bytes().as_ref()),
+            )
     }
 }
 

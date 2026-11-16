@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use miden_core_lib::handlers::ecgfp5_eidos::ECGFP5_EIDOS_SEAL_EVENT_NAME;
 use miden_processor::ProcessorState;
 use miden_processor::advice::{AdviceMutation, AdviceProvider};
 use miden_processor::trace::RowIndex;
@@ -17,6 +18,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{Asset, AssetId, AssetVault};
 use miden_protocol::block::account_tree::AccountIdKey;
+use miden_protocol::crypto::ecdh::ecgfp5::PublicKey;
 use miden_protocol::note::{
     NoteAttachment,
     NoteAttachmentContent,
@@ -179,6 +181,11 @@ pub(crate) enum TransactionEvent {
         tx_summary: TransactionSummary,
     },
 
+    /// A core-library IES `seal` request.
+    IesSeal {
+        recipient: PublicKey,
+    },
+
     LinkMapSet {
         advice_mutation: Vec<AdviceMutation>,
     },
@@ -200,6 +207,13 @@ impl TransactionEvent {
         process: &ProcessorState,
     ) -> Result<Option<TransactionEvent>, TransactionKernelError> {
         let event_id = EventId::from_felt(process.get_stack_item(0));
+
+        if event_id == ECGFP5_EIDOS_SEAL_EVENT_NAME.to_event_id() {
+            return Ok(Some(TransactionEvent::IesSeal {
+                recipient: extract_ies_recipient(process)?,
+            }));
+        }
+
         let tx_event_id = TransactionEventId::try_from(event_id).map_err(|err| {
             TransactionKernelError::other_with_source(
                 "failed to convert event ID into transaction event ID",
@@ -646,6 +660,30 @@ impl TransactionEvent {
 
         Ok(tx_event)
     }
+}
+
+/// Resolves and validates the recipient public key carried by a core-library IES `seal` request.
+fn extract_ies_recipient(process: &ProcessorState) -> Result<PublicKey, TransactionKernelError> {
+    let commitment = process.get_stack_word(1);
+    let elements = process
+        .advice_provider()
+        .get_mapped_values(&commitment)
+        .ok_or(TransactionKernelError::IesPublicKeyMissing(commitment))?;
+    let elements = <[Felt; 5]>::try_from(elements).map_err(|_| {
+        TransactionKernelError::IesPublicKeyInvalidLength { commitment, len: elements.len() }
+    })?;
+    let recipient = PublicKey::from_elements(elements)
+        .map_err(|source| TransactionKernelError::IesPublicKeyInvalid { commitment, source })?;
+
+    let actual = recipient.to_commitment();
+    if actual != commitment {
+        return Err(TransactionKernelError::IesPublicKeyCommitmentMismatch {
+            expected: commitment,
+            actual,
+        });
+    }
+
+    Ok(recipient)
 }
 
 // TX SUMMARY OR SIGNATURE

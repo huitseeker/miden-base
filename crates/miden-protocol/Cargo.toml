@@ -60,6 +60,7 @@ rand         = { workspace = true }
 rand_xoshiro = { default-features = false, optional = true, version = "0.8" }
 semver       = { features = ["serde"], version = "1.0" }
 serde        = { features = ["derive"], optional = true, workspace = true }
+subtle       = { workspace = true }
 thiserror    = { workspace = true }
 toml         = { optional = true, workspace = true }
 # for SecretKey generation

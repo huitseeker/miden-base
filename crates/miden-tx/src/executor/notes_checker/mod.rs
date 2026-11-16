@@ -417,7 +417,7 @@ where
 
         let (mut host, stack_inputs, advice_inputs) = self
             .tx_executor
-            .prepare_transaction(tx_inputs)
+            .prepare_transaction(tx_inputs, Vec::new())
             .await
             .map_err(TransactionCheckerError::TransactionPreparation)?;
 
@@ -483,7 +483,7 @@ where
                     let checker_error = match error {
                         // the account's authentication requested a signature the executor could
                         // not provide
-                        TransactionExecutorError::Unauthorized(_)
+                        TransactionExecutorError::Unauthorized { .. }
                         | TransactionExecutorError::MissingAuthenticator => {
                             TransactionCheckerError::AuthorizationRequired {
                                 error,

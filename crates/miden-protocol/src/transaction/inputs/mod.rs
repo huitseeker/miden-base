@@ -416,6 +416,12 @@ impl TransactionInputs {
         &self.ies_seal_secrets
     }
 
+    /// Returns the ephemeral secrets for IES `seal` requests in request order: those supplied in
+    /// the transaction arguments, followed by those the host drew.
+    pub fn ies_seal_secrets_in_request_order(&self) -> impl Iterator<Item = &IesSealSecret> {
+        self.tx_args.ies_seal_secrets().iter().chain(&self.ies_seal_secrets)
+    }
+
     /// Returns the code tree of the reference block, which tracks the procedure roots whose
     /// presence or absence the transaction proved during execution.
     pub fn code_tree(&self) -> &PartialCodeTree {

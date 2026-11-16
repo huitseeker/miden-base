@@ -247,6 +247,7 @@ pub fn dummy_transaction_inputs() -> TransactionInputs {
         BTreeMap::from([(unauthenticated_note.id(), dummy_word(51))]),
         vec![Note::mock_noop(dummy_word(57)).recipient().clone()],
         dummy_signatures(),
+        dummy_ies_seal_secrets(),
         dummy_advice_inputs([52, 53], 54, 55),
         dummy_word(56),
         None,
