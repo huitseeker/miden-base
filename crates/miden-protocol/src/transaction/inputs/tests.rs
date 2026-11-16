@@ -25,6 +25,7 @@ use crate::block::BlockHeader;
 use crate::block::account_tree::AccountTree;
 use crate::block::code_tree::{CodeTree, CodeTreeRoot, PartialCodeTree};
 use crate::code::ProcedureRoot;
+use crate::crypto::ecdh::ecgfp5::SecretKey;
 use crate::crypto::merkle::smt::Smt;
 use crate::errors::TransactionInputError;
 use crate::note::NoteScript;
@@ -35,6 +36,7 @@ use crate::testing::account_id::{
 };
 use crate::transaction::{
     AccountInputs,
+    IesSealSecret,
     InputNotes,
     PartialBlockchain,
     TransactionArgs,
@@ -153,6 +155,10 @@ fn builder_preserves_all_transaction_input_components() -> anyhow::Result<()> {
     );
     let foreign_account = account_inputs(&mock_account(foreign_account_id()?)?)?;
     let note_script = NoteScript::mock();
+    let ies_seal_secret = IesSealSecret::new(
+        SecretKey::from_bytes(&[3; 40])?.public_key(),
+        SecretKey::from_bytes(&[4; 40])?,
+    );
     let code_tree = mock_code_tree()?;
     let block_header = mock_block_header(&blockchain, code_tree.root());
     let partial_code_tree =
@@ -167,6 +173,7 @@ fn builder_preserves_all_transaction_input_components() -> anyhow::Result<()> {
         .tx_args(tx_args.clone())
         .foreign_accounts(vec![foreign_account.clone()])
         .note_scripts(vec![note_script.clone()])
+        .ies_seal_secrets(vec![ies_seal_secret.clone()])
         .code_tree(partial_code_tree.clone())
         .build()?;
 
@@ -181,6 +188,7 @@ fn builder_preserves_all_transaction_input_components() -> anyhow::Result<()> {
         &BTreeMap::from([(foreign_account.id(), foreign_account)])
     );
     assert_eq!(tx_inputs.note_scripts(), &BTreeMap::from([(note_script.root(), note_script)]));
+    assert_eq!(tx_inputs.ies_seal_secrets(), &[ies_seal_secret]);
     assert_eq!(tx_inputs.code_tree(), &partial_code_tree);
 
     Ok(())
