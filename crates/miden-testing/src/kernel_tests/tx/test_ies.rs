@@ -5,18 +5,38 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use anyhow::Context;
+use assert_matches::assert_matches;
+use miden_processor::ExecutionError;
 use miden_protocol::account::Account;
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::ecdh::ecgfp5::SecretKey;
 use miden_protocol::crypto::ies::ecgfp5_eidos::{self, Envelope};
 use miden_protocol::note::NoteType;
-use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE;
-use miden_protocol::transaction::{ExecutedTransaction, TransactionScript};
-use miden_protocol::{Felt, WORD_SIZE};
+use miden_protocol::testing::account_id::{
+    ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
+    ACCOUNT_ID_SENDER,
+};
+use miden_protocol::transaction::{
+    ExecutedTransaction,
+    IesSealSecret,
+    InputNote,
+    TransactionScript,
+};
+use miden_protocol::{Felt, WORD_SIZE, Word};
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::testing::mock_account::MockAccountExt;
-use miden_tx::LocalTransactionProver;
+use miden_tx::auth::UnreachableAuth;
+use miden_tx::{
+    LocalTransactionProver,
+    NoteCheckerError,
+    NoteConsumptionChecker,
+    TransactionExecutor,
+    TransactionExecutorError,
+    TransactionKernelError,
+};
 
-use crate::{Auth, MockChainBuilder};
+use crate::utils::create_public_p2any_note;
+use crate::{Auth, MockChain, MockChainBuilder};
 
 const PLAINTEXT: [u32; 4] = [11, 22, 33, 44];
 const CONTEXT: [u32; 4] = [5, 6, 7, 8];
@@ -33,9 +53,7 @@ async fn ies_seal_executes_and_proves_with_recorded_secret() -> anyhow::Result<(
     let recipient = recipient_secret.public_key();
     let tx_script = compile_tx_script(recipient.to_elements())?;
 
-    let account = Account::mock(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE, Auth::IncrNonce);
-    let mut mock_chain = MockChainBuilder::with_accounts([account.clone()])?.build()?;
-    mock_chain.prove_next_block()?;
+    let (mock_chain, account) = mock_chain_and_account()?;
     let executed_tx = mock_chain
         .build_transaction(account)
         .tx_script(tx_script)
@@ -54,6 +72,93 @@ async fn ies_seal_executes_and_proves_with_recorded_secret() -> anyhow::Result<(
 
     let proven_tx = LocalTransactionProver::default().prove(executed_tx.clone())?;
     assert_eq!(proven_tx.id(), executed_tx.id());
+
+    Ok(())
+}
+
+/// A supplied secret fixes the envelope during execution and proving without drawing another one.
+#[tokio::test]
+async fn ies_seal_executes_and_proves_with_supplied_secret() -> anyhow::Result<()> {
+    let recipient_secret = secret_key(1);
+    let recipient = recipient_secret.public_key();
+    let seal_secret = IesSealSecret::new(recipient, secret_key(2));
+    let tx_script = compile_tx_script(recipient.to_elements())?;
+
+    let (mock_chain, account) = mock_chain_and_account()?;
+    let executed_tx = mock_chain
+        .build_transaction(account)
+        .tx_script(tx_script)
+        .add_ies_seal_secret(seal_secret.clone())
+        .build()?
+        .execute()
+        .await?;
+
+    let envelope = envelope(&executed_tx)?;
+    let plaintext = ecgfp5_eidos::open(&recipient_secret, &felts(CONTEXT), &envelope)?;
+    assert_eq!(plaintext, felts(PLAINTEXT));
+    assert_eq!(envelope.ephemeral_key(), seal_secret.ephemeral_secret().public_key());
+    assert_eq!(executed_tx.tx_args().ies_seal_secrets(), core::slice::from_ref(&seal_secret));
+    assert!(executed_tx.tx_inputs().ies_seal_secrets().is_empty());
+
+    let proven_tx = LocalTransactionProver::default().prove(executed_tx.clone())?;
+    assert_eq!(proven_tx.id(), executed_tx.id());
+
+    Ok(())
+}
+
+/// Note checking and execution reject a supplied secret bound to another recipient.
+#[tokio::test]
+async fn ies_seal_rejects_a_secret_for_another_recipient() -> anyhow::Result<()> {
+    let requested = secret_key(1).public_key();
+    let supplied = secret_key(2).public_key();
+    let tx_script = compile_tx_script(requested.to_elements())?;
+    let note =
+        create_public_p2any_note(ACCOUNT_ID_SENDER.try_into().unwrap(), [FungibleAsset::mock(100)]);
+
+    let (mock_chain, account) = mock_chain_and_account()?;
+    let mock_tx = mock_chain
+        .build_transaction(account)
+        .unauthenticated_input_note(note.clone())
+        .tx_script(tx_script)
+        .add_ies_seal_secret(IesSealSecret::new(supplied, secret_key(3)))
+        .build()?;
+
+    let checker_error = {
+        let executor = TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&mock_tx);
+        NoteConsumptionChecker::new(&executor)
+            .can_consume(
+                mock_tx.account().id(),
+                mock_tx.tx_inputs().block_header().block_num(),
+                InputNote::unauthenticated(note),
+                mock_tx.tx_args().clone(),
+            )
+            .await
+            .unwrap_err()
+    };
+    let NoteCheckerError::TransactionScriptExecution(checker_error) = checker_error else {
+        anyhow::bail!("expected transaction script failure, got {checker_error}");
+    };
+    assert_recipient_mismatch(checker_error, supplied.to_commitment(), requested.to_commitment());
+
+    let execution_error = mock_tx.execute().await.unwrap_err();
+    assert_recipient_mismatch(execution_error, supplied.to_commitment(), requested.to_commitment());
+
+    Ok(())
+}
+
+/// Execution rejects a supplied secret when the transaction makes no IES `seal` request.
+#[tokio::test]
+async fn ies_seal_rejects_an_unused_secret() -> anyhow::Result<()> {
+    let recipient = secret_key(1).public_key();
+    let (mock_chain, account) = mock_chain_and_account()?;
+    let result = mock_chain
+        .build_transaction(account)
+        .add_ies_seal_secret(IesSealSecret::new(recipient, secret_key(2)))
+        .build()?
+        .execute()
+        .await;
+
+    assert_matches!(result, Err(TransactionExecutorError::UnusedIesSealSecrets(1)));
 
     Ok(())
 }
@@ -129,6 +234,34 @@ fn envelope(executed_tx: &ExecutedTransaction) -> anyhow::Result<Envelope> {
         .get(0)
         .context("output note should carry the envelope")?;
     Ok(Envelope::from_elements(attachment.as_elements())?)
+}
+
+fn mock_chain_and_account() -> anyhow::Result<(MockChain, Account)> {
+    let account = Account::mock(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE, Auth::IncrNonce);
+    let mut mock_chain = MockChainBuilder::with_accounts([account.clone()])?.build()?;
+    mock_chain.prove_next_block()?;
+    Ok((mock_chain, account))
+}
+
+fn assert_recipient_mismatch(error: TransactionExecutorError, supplied: Word, requested: Word) {
+    assert_matches!(
+        error,
+        TransactionExecutorError::TransactionProgramExecutionFailed(ExecutionError::EventError {
+            error,
+            ..
+        }) => {
+            assert_matches!(
+                *error.downcast::<TransactionKernelError>().unwrap(),
+                TransactionKernelError::IesSealSecretRecipientMismatch {
+                    supplied: actual_supplied,
+                    requested: actual_requested,
+                } => {
+                    assert_eq!(actual_supplied, supplied);
+                    assert_eq!(actual_requested, requested);
+                }
+            );
+        }
+    );
 }
 
 fn secret_key(seed: u8) -> SecretKey {

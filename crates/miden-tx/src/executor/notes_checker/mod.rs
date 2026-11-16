@@ -415,9 +415,10 @@ where
             return Ok(Vec::new());
         }
 
+        let ies_seal_secrets = tx_inputs.ies_seal_secrets_in_request_order().cloned().collect();
         let (mut host, stack_inputs, advice_inputs) = self
             .tx_executor
-            .prepare_transaction(tx_inputs, Vec::new())
+            .prepare_transaction(tx_inputs, ies_seal_secrets)
             .await
             .map_err(TransactionCheckerError::TransactionPreparation)?;
 
